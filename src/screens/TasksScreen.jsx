@@ -1,5 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -12,9 +14,10 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSQLiteContext } from 'expo-sqlite';
 import { Ionicons } from '@expo/vector-icons';
 import TaskCard from '../components/TaskCard';
-import { sampleTasks } from '../data/sampleTasks';
+import { getTasks, insertTask, updateTaskCompletion } from '../database/database';
 import { colors } from '../theme/colors';
 
 const filters = [
@@ -49,7 +52,12 @@ function ChoiceGroup({ title, options, selected, onSelect }) {
 }
 
 export default function TasksScreen() {
-  const [tasks, setTasks] = useState(sampleTasks);
+  const db = useSQLiteContext();
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const pendingToggles = useRef(new Set());
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
@@ -75,10 +83,41 @@ export default function TasksScreen() {
     });
   }, [tasks, search, filter]);
 
-  function toggleComplete(id) {
-    setTasks((oldTasks) => oldTasks.map((task) =>
-      task.id === id ? { ...task, completed: !task.completed } : task
-    ));
+  // Reload records from SQLite when the screen first opens.
+  const loadTasks = useCallback(async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      setTasks(await getTasks(db));
+    } catch (error) {
+      console.error('Unable to load tasks:', error);
+      setLoadError('Tasks could not be loaded from this device.');
+    } finally {
+      setLoading(false);
+    }
+  }, [db]);
+
+  useEffect(() => {
+    loadTasks();
+  }, [loadTasks]);
+
+  async function toggleComplete(id) {
+    if (pendingToggles.current.has(id)) return;
+    const task = tasks.find((item) => item.id === id);
+    if (!task) return;
+    pendingToggles.current.add(id);
+    const nextCompleted = !task.completed;
+    try {
+      await updateTaskCompletion(db, id, nextCompleted);
+      setTasks((current) => current.map((item) =>
+        item.id === id ? { ...item, completed: nextCompleted } : item
+      ));
+    } catch (error) {
+      console.error('Unable to update task:', error);
+      Alert.alert('Could not save', 'Please try again. Your task has not been changed.');
+    } finally {
+      pendingToggles.current.delete(id);
+    }
   }
 
   function resetForm() {
@@ -89,11 +128,11 @@ export default function TasksScreen() {
     setNote('');
   }
 
-  function addTask() {
+  async function addTask() {
     const cleanTitle = title.trim();
-    if (!cleanTitle) return;
+    if (!cleanTitle || isSaving) return;
     const newTask = {
-      id: `task-${Date.now()}`,
+      id: `task-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
       title: cleanTitle,
       subject: subject.trim() || 'General',
       due,
@@ -101,12 +140,21 @@ export default function TasksScreen() {
       note: note.trim(),
       completed: false,
     };
-    setTasks((oldTasks) => [newTask, ...oldTasks]);
-    setFilter('All');
-    setSearch('');
-    resetForm();
-    Keyboard.dismiss();
-    setShowAdd(false);
+    setIsSaving(true);
+    try {
+      await insertTask(db, newTask);
+      setTasks((current) => [newTask, ...current]);
+      setFilter('All');
+      setSearch('');
+      resetForm();
+      Keyboard.dismiss();
+      setShowAdd(false);
+    } catch (error) {
+      console.error('Unable to save task:', error);
+      Alert.alert('Could not save', 'Your task was not saved. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
@@ -185,7 +233,21 @@ export default function TasksScreen() {
           <Text style={styles.listCount}>{visibleTasks.length} shown</Text>
         </View>
 
-        {visibleTasks.length ? (
+        {loading ? (
+          <View style={styles.emptyCard}>
+            <ActivityIndicator color={colors.primary} />
+            <Text style={styles.emptyText}>Loading your tasks...</Text>
+          </View>
+        ) : loadError ? (
+          <View style={styles.emptyCard}>
+            <Ionicons name="alert-circle-outline" size={30} color={colors.primary} />
+            <Text style={styles.emptyTitle}>Something went wrong</Text>
+            <Text style={styles.emptyText}>{loadError}</Text>
+            <Pressable style={styles.retryButton} onPress={loadTasks}>
+              <Text style={styles.retryText}>Try again</Text>
+            </Pressable>
+          </View>
+        ) : visibleTasks.length ? (
           visibleTasks.map((task) => (
             <TaskCard
               key={task.id}
@@ -206,7 +268,7 @@ export default function TasksScreen() {
           </View>
         )}
         <Text style={styles.demoNote}>
-          Practice mode: changes stay while the app is open. Permanent offline saving comes next.
+          Saved on your device. Your tasks are available offline.
         </Text>
       </ScrollView>
 
@@ -223,7 +285,7 @@ export default function TasksScreen() {
           <View style={styles.modalPanel}>
             <View style={styles.modalHeader}>
               <View style={styles.modalHeaderText}>
-                <Text style={styles.modalTitle}>Add a little goal for today</Text>
+                <Text style={styles.modalTitle}>Add a task for today</Text>
                 <Text style={styles.modalHint}>Keep it simple. Start small.</Text>
               </View>
               <Pressable onPress={() => { Keyboard.dismiss(); setShowAdd(false); }} accessibilityLabel="Close add task">
@@ -263,12 +325,12 @@ export default function TasksScreen() {
                 maxLength={200}
               />
               <Pressable
-                style={[styles.saveButton, !title.trim() && styles.disabledButton]}
-                disabled={!title.trim()}
+                style={[styles.saveButton, (!title.trim() || isSaving) && styles.disabledButton]}
+                disabled={!title.trim() || isSaving}
                 onPress={addTask}
                 accessibilityRole="button"
               >
-                <Text style={styles.saveText}>Save task</Text>
+                <Text style={styles.saveText}>{isSaving ? 'Saving...' : 'Save task'}</Text>
               </Pressable>
             </ScrollView>
           </View>
@@ -356,6 +418,8 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 17, color: colors.text, fontWeight: '800', marginTop: 12 },
   emptyText: { color: colors.muted, textAlign: 'center', lineHeight: 21, marginTop: 9 },
   demoNote: { color: colors.muted, textAlign: 'center', fontSize: 11, lineHeight: 18, marginTop: 18 },
+  retryButton: { marginTop: 16, paddingHorizontal: 20, paddingVertical: 11, borderRadius: 12, backgroundColor: colors.raised },
+  retryText: { color: colors.primary, fontWeight: '700' },
   modalBack: { flex: 1, backgroundColor: 'rgba(0,5,13,0.78)', justifyContent: 'flex-end' },
   modalPanel: {
     backgroundColor: colors.background, paddingHorizontal: 20, paddingTop: 23,

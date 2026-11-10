@@ -2,6 +2,8 @@ import React from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SQLiteProvider } from 'expo-sqlite';
+import { initializeDatabase } from './src/database/database';
 import AppNavigator from './src/navigation/AppNavigator';
 import { colors } from './src/theme/colors';
 
@@ -20,10 +22,12 @@ const navigationTheme = {
 export default function App() {
   return (
     <SafeAreaProvider>
-      <NavigationContainer theme={navigationTheme}>
+      <SQLiteProvider databaseName="learnova.db" onInit={initializeDatabase}>
         <StatusBar style="light" backgroundColor={colors.background} />
-        <AppNavigator />
-      </NavigationContainer>
+        <NavigationContainer theme={navigationTheme}>
+          <AppNavigator />
+        </NavigationContainer>
+      </SQLiteProvider>
     </SafeAreaProvider>
   );
 }
