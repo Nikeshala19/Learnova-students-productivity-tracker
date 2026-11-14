@@ -1,5 +1,5 @@
-// Local SQLite storage shared by Learnova's Tasks and Goals features.
-// This file extends the Phase 4 database. Existing tasks are preserved.
+// Learnova's local offline database for tasks, goals and energy-based focus sessions.
+// Upgrades preserve existing records when students install a new feature.
 import { sampleTasks } from '../data/sampleTasks';
 import { sampleGoals } from '../data/sampleGoals';
 
@@ -25,11 +25,26 @@ export async function initializeDatabase(db) {
       achieved INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS study_sessions (
+      id TEXT PRIMARY KEY NOT NULL,
+      subject TEXT NOT NULL,
+      duration_seconds INTEGER NOT NULL CHECK(duration_seconds > 0),
+      mood TEXT NOT NULL,
+      energy TEXT NOT NULL DEFAULT 'Okay',
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS app_meta (
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
     );
   `);
+
+  // Upgrade an existing study_sessions table from the earlier Focus implementation.
+  // CREATE TABLE IF NOT EXISTS does NOT add columns to an existing table.
+  const sessionColumns = await db.getAllAsync('PRAGMA table_info(study_sessions)');
+  if (!sessionColumns.some((column) => column.name === 'energy')) {
+    await db.execAsync("ALTER TABLE study_sessions ADD COLUMN energy TEXT NOT NULL DEFAULT 'Okay';");
+  }
 
   // Independent seed flags are important for users upgrading from Phase 4.
   // The existing tasks_seeded flag must not prevent the new goals from appearing.
@@ -127,4 +142,31 @@ export async function updateGoalStatus(db, id, achieved) {
 
 export async function deleteGoal(db, id) {
   await db.runAsync('DELETE FROM goals WHERE id = ?', id);
+}
+
+
+// ----------------- Study sessions (new in Phase 6) -----------------
+export async function getStudySessions(db) {
+  const rows = await db.getAllAsync(
+    `SELECT id, subject, duration_seconds, mood, energy, created_at
+     FROM study_sessions ORDER BY created_at DESC, id DESC`
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    subject: row.subject,
+    durationSeconds: row.duration_seconds,
+    mood: row.mood,
+    energy: row.energy,
+    createdAt: row.created_at,
+  }));
+}
+
+export async function insertStudySession(db, session) {
+  await db.runAsync(
+    `INSERT INTO study_sessions
+      (id, subject, duration_seconds, mood, energy, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    session.id, session.subject, session.durationSeconds,
+    session.mood, session.energy, session.createdAt
+  );
 }
